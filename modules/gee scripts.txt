@@ -1,0 +1,203 @@
+# // Define location and time range
+#   // Delhi
+# var startDate = '2024-01-01';
+# var endDate = '2024-12-31';
+
+# // Load MODIS MOD09GA (daily surface reflectance)
+# var modis = ee.ImageCollection('MODIS/061/MOD09GA')
+#   .filterDate(startDate, endDate)
+#   .filterBounds(point)
+#   .map(function(image) {
+#     var ndvi = image.normalizedDifference(['sur_refl_b02', 'sur_refl_b01']).rename('NDVI');
+#     var date = ee.Date(image.get('system:time_start')).format('YYYY-MM-dd');
+#     var value = ndvi.reduceRegion({
+#       reducer: ee.Reducer.mean(),
+#       geometry: point,
+#       scale: 500,
+#       maxPixels: 1e9
+#     }).get('NDVI');
+
+#     return ee.Feature(null, {
+#       'date': date,
+#       'ndvi': value
+#     });
+#   });
+
+# // Convert to FeatureCollection
+# var ndvi_fc = ee.FeatureCollection(modis);
+
+# // Preview in the console
+# print('NDVI FeatureCollection:', ndvi_fc);
+
+# // Export to CSV
+# Export.table.toDrive({
+#   collection: ndvi_fc,
+#   description: 'NDVI_Daily_Delhi',
+#   fileFormat: 'CSV'
+# });
+
+-----------------------
+
+# // Define location and date range
+# var startDate = ee.Date('2024-01-01');
+# var endDate = ee.Date('2024-12-31');
+
+# // Sentinel-5P NO2 ImageCollection
+# var collection = ee.ImageCollection('COPERNICUS/S5P/OFFL/L3_NO2')
+#   .select('NO2_column_number_density')
+#   .filterDate(startDate, endDate)
+#   .filterBounds(point);
+
+# // Generate list of dates (daily)
+# var nDays = endDate.difference(startDate, 'day');
+# var dateList = ee.List.sequence(0, nDays.subtract(1)).map(function(dayOffset) {
+#   return startDate.advance(dayOffset, 'day');
+# });
+
+# // Map over daily dates to get one value per day
+# var dailyNO2 = ee.FeatureCollection(dateList.map(function(date) {
+#   date = ee.Date(date);
+#   var dayCollection = collection.filterDate(date, date.advance(1, 'day'));
+#   var dailyImage = dayCollection.median();  // Or .mean(), or .first()
+
+#   var no2 = dailyImage.reduceRegion({
+#     reducer: ee.Reducer.mean(),
+#     geometry: point,
+#     scale: 10,
+#     maxPixels: 1e9
+#   }).get('NO2_column_number_density');
+
+#   return ee.Feature(null, {
+#     'date': date.format('YYYY-MM-dd'),
+#     'no2_mol_m2': no2
+#   });
+# }));
+
+# // Preview result
+# print('Daily NO2 FeatureCollection:', dailyNO2);
+
+# // Export to CSV
+# Export.table.toDrive({
+#   collection: dailyNO2,
+#   description: 'NO2_Daily_Delhi_CSV',
+#   fileFormat: 'CSV'
+# });
+
+
+--------------------------------------------------
+
+
+
+# // Choose month to export
+# var startDate = ee.Date('2024-12-01');
+# var endDate = ee.Date('2025-01-01');  // next month
+
+# // ERA5 HOURLY
+# var era5 = ee.ImageCollection('ECMWF/ERA5/HOURLY')
+#   .filterDate(startDate, endDate)
+#   .filterBounds(point);
+
+# // Calculate RH from temperature and dew point
+# function calcRH(tempK, dewK) {
+#   var a = 17.27;
+#   var b = 237.7;
+#   var tempC = tempK.subtract(273.15);
+#   var dewC = dewK.subtract(273.15);
+#   var alpha = dewC.multiply(a).divide(dewC.add(b));
+#   var beta = tempC.multiply(a).divide(tempC.add(b));
+#   return alpha.subtract(beta).exp().multiply(100);
+# }
+
+# // Generate daily list
+# var nDays = endDate.difference(startDate, 'day');
+# var dateList = ee.List.sequence(0, nDays.subtract(1)).map(function(d) {
+#   d = ee.Number(d);
+#   return startDate.advance(d, 'day');
+# });
+
+# // Create feature collection of daily weather
+# var weatherFC = ee.FeatureCollection(dateList.map(function(date) {
+#   date = ee.Date(date);
+#   var daily = era5.filterDate(date, date.advance(1, 'day')).mean();
+
+#   var tempK = daily.select('temperature_2m');
+#   var dewK = daily.select('dewpoint_temperature_2m');
+#   var RH = calcRH(tempK, dewK);
+
+#   var wind = daily.select('u_component_of_wind_10m')
+#                   .hypot(daily.select('v_component_of_wind_10m'));
+
+#   var vars = daily.select([
+#     'temperature_2m',
+#     'total_precipitation',
+#     'surface_net_solar_radiation'
+#   ])
+#   .addBands(wind.rename('wind_speed'))
+#   .addBands(RH.rename('relative_humidity'));
+
+#   var values = vars.reduceRegion({
+#     reducer: ee.Reducer.mean(),
+#     geometry: point,
+#     scale: 10,
+#     maxPixels: 1e9
+#   });
+
+#   return ee.Feature(null, {
+#     'date': date.format('YYYY-MM-dd'),
+#     'temperature_K': values.get('temperature_2m'),
+#     'wind_speed_m_s': values.get('wind_speed'),
+#     'precip_m': values.get('total_precipitation'),
+#     'solar_rad_J_m2': values.get('surface_net_solar_radiation'),
+#     'relative_humidity_percent': values.get('relative_humidity')
+#   });
+# }));
+
+# // Print first few to preview
+# print('Daily Weather for Jan 2024:', weatherFC.limit(5));
+
+# // Export this month only
+# Export.table.toDrive({
+#   collection: weatherFC,
+#   description: 'Delhi_Weather_DEC_2024',
+#   fileFormat: 'CSV'
+# });
+
+# ----------------------------------------------------
+
+# // ====== Define Region of Interest (Delhi) ======
+
+# // ====== Load SMOD 2025 Image ======
+# var image = ee.Image("JRC/GHSL/P2023A/GHS_SMOD_V2-0/2025");
+# var smod = image.select('smod_code');
+
+# // ====== Visualize the SMOD layer ======
+# Map.centerObject(delhi, 9);
+# Map.addLayer(smod.clip(delhi), {min: 1, max: 30, palette: ['ffffff','ffb3b3','ff6666','cc0000']}, 'Degree of Urbanization');
+
+# // ====== Create Grid of Points (2km spacing) ======
+# var grid = delhi.coveringGrid(ee.Projection('EPSG:4326').atScale(2000));
+# var points = grid.map(function(cell) {
+#   return ee.Feature(cell.centroid({maxError: 10}));
+# });
+
+# // ====== Sample the SMOD code at each point ======
+# var sampled = smod.sampleRegions({
+#   collection: points,
+#   scale: 100,
+#   geometries: true
+# });
+
+# // ====== Rename sampled band to 'urban_class' ======
+# sampled = sampled.map(function(f) {
+#   return f.set('urban_class', f.get('smod_code')).select(['urban_class']);
+# });
+
+# // ====== Print to console and export as CSV ======
+# print("Sampled Urban Classes:", sampled.limit(5));
+
+# Export.table.toDrive({
+#   collection: sampled,
+#   description: 'Delhi_GHS_SMOD_2025_UrbanClass',
+#   fileFormat: 'CSV'
+# });
+
